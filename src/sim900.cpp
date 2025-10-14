@@ -40,6 +40,14 @@ String SIM900::getResponse() {
     return "";
 }
 
+bool SIM900::isReady() {
+    String response = this->getResponse();
+    if(response.indexOf("+CFUN: 1") != - 1 && response.indexOf("+CPIN: READY") != - 1 && response.indexOf("Call Ready") != - 1) {
+        return true;
+    }
+    return false;
+}
+
 String SIM900::getReturnedMode() {
     String response = this->getResponse();
     return response.substring(response.lastIndexOf('\n') + 1);
@@ -101,19 +109,156 @@ bool SIM900::changeCardPin(uint8_t pin) {
     return this->isSuccessCommand();
 }
 
+int SIM900::SMSReceived() {
+    this->sendCommand("AT+CMGF=1");
+    delay(100);
+    this->sendCommand("AT+CNMI=2,2,0,0,0");
+    delay(100);
+
+    String response = this->getResponse();
+
+    if(response.indexOf("+CMT: ") == -1) return SIM900_SMS_AVAILABLE_RESULT_UNKNOWN;
+
+    int result = SIM900_SMS_AVAILABLE_RESULT_UNKNOWN;
+    String mode = this->getReturnedMode();
+
+    if(mode == F("+CMT"))
+        result = SIM900_SMS_AVAILABLE_RESULT_CMT;
+    else if(mode == F("OK"))
+        result = SIM900_SMS_AVAILABLE_RESULT_OK;
+    else if(mode == F("ERROR"))
+        result = SIM900_SMS_AVAILABLE_RESULT_ERROR;
+    return result;
+}
+
+SIM900_SMS SIM900::sms;
+
+SIM900_Handler_Event SIM900::handleEvents() {
+    const char* OK_REPLY = "OK";
+    const char* RING_REPLY = "RING";
+    const char* NO_CARRIER_REPLY = "NO CARRIER";
+    const char* CMT_REPLY = "+CMT:";
+    const char* CMGS_REPLY = "+CMGS"; // Check for +CMGS without the colon for broader compatibility
+    const char* CLIP_REPLY = "+CLIP: ";
+
+    SIM900_Handler_Event handlerState;
+    handlerState.status = SIM900_NOTHING;
+
+    // Use a static buffer to avoid heap fragmentation from String concatenation
+    static char msgBuffer[160]; // 128
+    static uint8_t msgIdx = 0;
+
+    //msg = sim900.readStringUntil('\n');
+    // read from sim900 line by line
+    // avoiding inefficient substring() and getResponse() calls
+    while(this->sim900.available()) {
+        char ch = this->sim900.read();
+
+        // Process the buffer when a newline is received, indicating end of a line.
+        if (ch == '\n') {
+            if (msgIdx > 0) { // We have a complete line to process
+                msgBuffer[msgIdx] = '\0'; // Null-terminate the buffer to make it a valid C-string
+
+        if (strcmp(msgBuffer, RING_REPLY) == 0) {
+          handlerState.status = SIM900_RING;
+        } else if (strcmp(msgBuffer, OK_REPLY) == 0) {
+          handlerState.status = SIM900_OK;
+          msgIdx = 0;
+          return handlerState;
+        } else if (strcmp(msgBuffer, NO_CARRIER_REPLY) == 0) {
+          handlerState.status = SIM900_NOCARRIER;
+          msgIdx = 0;
+          return handlerState;
+        } else if (strstr(msgBuffer, CMGS_REPLY) != NULL) {
+          handlerState.status = SIM900_CMGS;
+          msgIdx = 0;
+          return handlerState;
+        } else if (strstr(msgBuffer, CLIP_REPLY) != NULL) {
+          char* start = strchr(msgBuffer, '"');
+          if (start) {
+            start++;
+            char* end = strchr(start, '"');
+            if (end) {
+              *end = '\0';
+              handlerState.phonenumber = start;
+            }
+          }
+          handlerState.status = SIM900_CLIP;
+          // Don't return yet, RING might be followed by other data.
+        } else if (strstr(msgBuffer, CMT_REPLY) != NULL) {
+          char* start = strchr(msgBuffer, '"');
+          if (start) {
+            start++;
+            char* end = strchr(start, '"');
+            if (end) {
+              *end = '\0';
+              handlerState.phonenumber = start;
+            }
+          }
+          handlerState.status = SIM900_CMT;
+          // The main .ino file is now responsible for reading the next line (the message body).
+          msgIdx = 0;
+          return handlerState;
+        }
+      }
+      msgIdx = 0;
+    } else if (ch != '\r' && msgIdx < sizeof(msgBuffer) - 1) {
+      msgBuffer[msgIdx++] = ch;
+    }
+  }
+
+  if (handlerState.status != SIM900_NOTHING) {
+    return handlerState;
+  }
+
+  return handlerState;
+}
+
+SIM900_SMS SIM900::readSMS() {
+    return this->sms;
+}
+
+String SIM900::readSMSFromSIM() {
+    // phone number, message
+    //this->sendCommand("AT+CMGF=1");
+    //delay(100);
+    //this->sendCommand("AT+CNMI=2,2,0,0,0");
+    //delay(100);
+    this->sendCommand("AT+CMGL=\"REC UNREAD\"");
+    delay(100);
+    //this->sendCommand("AT+CMGR=1");
+    //delay(100);
+    //this->sendCommand("AT+CMGD=1,4");
+
+    String str = sim900.readStringUntil('\n');
+    Serial.println(str);
+    //  AT+CMGR=1\r
+    //  AT+CMGR=2\r
+    // AT+CMGR=ALL\r
+
+    return str;
+}
+
 SIM900Signal SIM900::signal() {
     SIM900Signal signal;
     signal.rssi = signal.bit_error_rate = 0;
     this->sendCommand("AT+CSQ");
 
     String response = this->queryResult();
-    uint8_t delim = response.indexOf(',');
+    if (response.length() == 0) {
+            return signal;
+    }
+    
+    // split values separated by comma "15,0"
+    const char* response_cstr = response.c_str(); // the start of the string; strchr(response, ','); // 0
+    const char* comma = strchr(response_cstr, ',');
+    if (comma != NULL) {
+        signal.rssi = atoi(response_cstr);
+        signal.bit_error_rate = atoi(comma + 1);
+    }
 
-    if(delim == -1)
-        return signal;
-
-    signal.rssi = (uint8_t) response.substring(0, delim).toInt();
-    signal.bit_error_rate = (uint8_t) response.substring(delim + 1).toInt();
+    //signal.rssi = (uint8_t) response.substring(0, delim).toInt();
+    //signal.bit_error_rate = (uint8_t) response.substring(delim + 1).toInt();
 
     return signal;
 }
@@ -181,18 +326,113 @@ bool SIM900::hangUp() {
     return this->isSuccessCommand();
 }
 
-bool SIM900::sendSMS(String number, String message) {
-    this->handshake();
+void SIM900::printResponse(String response) {
+    Serial.print("response: \"");
+    Serial.print(response);
+    Serial.println("\"");
+}
 
+String SIM900::readLine() {
+    if(!this->sim900.available()) return "";
+    int timeout = 1000;
+    int start = millis();
+    char ch = ' ';
+    String str = String();
+    while(this->sim900.available() && ch != '\n') {
+        ch = this->sim900.read();
+        //Serial.print(ch);
+        str += ch;
+        if((millis() - start) > timeout) break;
+    }
+    //Serial.println();
+    delay(100);
+    return str;
+}
+
+bool SIM900::sendSMS(const char* number, const char* message) {
+    // 1. Set SMS text mode
     this->sendCommand(F("AT+CMGF=1"));
-    delay(500);
-    this->sendCommand("AT+CMGS=\"" + number + "\"");
-    delay(500);
-    this->sendCommand(message);
-    delay(500);
-    this->sim900.write(0x1a);
+    if(!this->isSuccessCommand()) return false;
 
-    return this->getReturnedMode().startsWith(">");
+    // 2. Set character set to GSM for standard text
+    this->sendCommand(F("AT+CSCS=\"GSM\""));
+    if(!this->isSuccessCommand()) return false;
+
+    // 3. Send phone number
+    String command = String("AT+CMGS=\"");
+    command.concat(String(number));
+    command.concat("\"");
+    this->sendCommand(command);
+
+    // 4. Wait for the ">" prompt
+    String response = "";
+    unsigned long startTime = millis();
+    while (millis() - startTime < 3000) { // 2 second timeout
+        if (this->sim900.available()) {
+            response = this->sim900.readString();
+            if (response.indexOf('>') != -1) {
+                break;
+            }
+        }
+    }
+    if (response.indexOf('>') == -1) return false; // Didn't get prompt
+    //delay(500);
+
+    // 5. Send message content and Ctrl+Z
+    this->sim900.print(message);
+    //delay(500);
+    this->sim900.write(0x1A);
+    Serial.println("message sent");
+    return true;
+}
+
+bool SIM900::sendSMS2(String number, String message) {
+    String response;
+    // Set SMS to PDU mode
+    this->sendCommand(F("AT+CMGF=0"));
+    response = sim900.readStringUntil('\n');
+    delay(500);
+
+    // Convert message to UCS2 hex string
+    String pduMessage = "";
+    for (int i = 0; i < message.length(); i++) {
+        char highByte = (message[i] >> 8) & 0xFF;
+        char lowByte = message[i] & 0xFF;
+
+        if (highByte < 0x10) pduMessage += '0';
+        pduMessage += String(highByte, HEX);
+        if (lowByte < 0x10) pduMessage += '0';
+        pduMessage += String(lowByte, HEX);
+    }
+
+    // The PDU string needs to be built. This is a simplified example for UCS2.
+    // A full PDU implementation is more complex.
+    // For now, we can try a simpler method with Text Mode and UCS2 character set.
+    this->sendCommand(F("AT+CMGF=1")); // Back to Text Mode
+    response = sim900.readStringUntil('\n');
+    Serial.println(response);
+    delay(500);
+    //this->isSuccessCommand(); // Consume OK
+    this->sendCommand(F("AT+CSCS=\"UCS2\"")); // Set character set to UCS2
+    response = sim900.readStringUntil('\n');
+    Serial.println(response);
+    delay(500);
+    //this->isSuccessCommand(); // Consume OK
+
+    this->sendCommand("AT+CMGS=\"" + number + "\"");
+    delay(500); // Wait for '>'
+
+    this->sim900.print(pduMessage);
+    this->sim900.write(0x1A); // End of message character (Ctrl+Z)
+    delay(500);
+
+    while(sim900.available()) {
+        response = sim900.readStringUntil('\n');
+        Serial.println(response);
+        delay(100);
+    }
+
+    return this->isSuccessCommand();
 }
 
 SIM900Operator SIM900::networkOperator() {
@@ -280,16 +520,21 @@ SIM900HTTPResponse SIM900::request(SIM900HTTPRequest request) {
 }
 
 bool SIM900::updateRtc(SIM900RTC config) {
-    this->sendCommand(
-        "AT+CCLK=\"" + String(config.year <= 9 ? "0" : "") + String(config.year) +
-        "/" + String(config.month <= 9 ? "0" : "") + String(config.month) +
-        "/" + String(config.day <= 9 ? "0" : "") + String(config.day) +
-        "," + String(config.hour <= 9 ? "0" : "") + String(config.hour) +
-        ":" + String(config.minute <= 9 ? "0" : "") + String(config.minute) +
-        ":" + String(config.second <= 9 ? "0" : "") + String(config.second) +
-        "+" + String(config.gmt <= 9 ? "0" : "") + String(config.gmt) + "\""
+    // Use a char buffer and snprintf for memory-safe string formatting.
+    // This avoids heap fragmentation caused by String concatenation.
+    char command[50]; // Buffer to hold the AT command string.
+
+    // Format: AT+CCLK="YY/MM/DD,hh:mm:ss+TZ"
+    // The %02d format specifier handles zero-padding for all date/time parts.
+    // The %+d format specifier for GMT ensures a sign (+ or -) is always included.
+    snprintf(command, sizeof(command),
+             "AT+CCLK=\"%02d/%02d/%02d,%02d:%02d:%02d%+d\"",
+             config.year, config.month, config.day,
+             config.hour, config.minute, config.second,
+             config.gmt
     );
 
+    this->sendCommand(command);
     return this->isSuccessCommand();
 }
 
@@ -307,24 +552,34 @@ SIM900RTC SIM900::rtc() {
     if(!this->isSuccessCommand())
         return rtc;
     this->sendCommand(F("AT+CCLK?"));
-    
-    String time = this->queryResult();
-    time = time.substring(1, time.length() - 2);
 
-    uint8_t delim1 = time.indexOf('/'),
-        delim2 = time.indexOf('/', delim1 + 1),
-        delim3 = time.indexOf(',', delim2),
-        delim4 = time.indexOf(':', delim3),
-        delim5 = time.indexOf(':', delim4 + 1),
-        delim6 = time.indexOf('+', delim5);
+    // queryResult() returns a string like: "24/05/15,10:30:00+08"
+    String time_str = this->queryResult();
+    if (time_str.length() == 0) {
+        return rtc;
+    }
 
-    rtc.year =  (uint8_t) time.substring(0, delim1).toInt();
-    rtc.month = (uint8_t) time.substring(delim1 + 1, delim2).toInt();
-    rtc.day = (uint8_t) time.substring(delim2 + 1, delim3).toInt();
-    rtc.hour = (uint8_t) time.substring(delim3 + 1, delim4).toInt();
-    rtc.minute = (uint8_t) time.substring(delim4 + 1, delim5).toInt();
-    rtc.second = (uint8_t) time.substring(delim5 + 1, delim6).toInt();
-    rtc.gmt = (uint8_t) time.substring(delim6 + 1).toInt();
+    // strtok modifies the string, so we need a non-const char array.
+    // Let's copy the relevant part of the string into a temporary buffer.
+    char buffer[25]; // "YY/MM/DD,hh:mm:ss+TZ" is 20 chars + quotes + null
+    strncpy(buffer, time_str.c_str() + 1, sizeof(buffer) - 1); // +1 to skip opening quote
+    buffer[sizeof(buffer) - 1] = '\0'; // Ensure null termination
+
+    // Use strtok to tokenize the string. Delimiters are /, ,, :, and +
+    char* token = strtok(buffer, "/,:+");
+    if (token != NULL) rtc.year = atoi(token);
+    token = strtok(NULL, "/,:+");
+    if (token != NULL) rtc.month = atoi(token);
+    token = strtok(NULL, "/,:+");
+    if (token != NULL) rtc.day = atoi(token);
+    token = strtok(NULL, "/,:+");
+    if (token != NULL) rtc.hour = atoi(token);
+    token = strtok(NULL, "/,:+");
+    if (token != NULL) rtc.minute = atoi(token);
+    token = strtok(NULL, "/,:+");
+    if (token != NULL) rtc.second = atoi(token);
+    token = strtok(NULL, "/,:+");
+    if (token != NULL) rtc.gmt = atoi(token);
 
     return rtc; 
 }

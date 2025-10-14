@@ -47,13 +47,13 @@ private:
     bool hasAPN = false;
 
     /// Send a command to the SIM900 module.
-    void sendCommand(String message);
+    //void sendCommand(String message);
 
     /// Check if the last command was successful.
     bool isSuccessCommand();
 
     /// Get the response from the SIM900 module.
-    String getResponse();
+    //String getResponse();
 
     /// Get the returned operational mode from the SIM900 module.
     String getReturnedMode();
@@ -64,6 +64,12 @@ private:
     /// Retrieve the result of a query operation.
     String queryResult();
 
+    static SIM900_SMS sms;
+
+    String readLine();
+
+    void printResponse(String response);
+
 public:
     /**
      * 
@@ -73,6 +79,19 @@ public:
      * 
      */
     SIM900(Stream& _sim900);
+
+    /**
+     * @brief returns true if SIM900 is ready to receive calls, smss and commands   
+     *
+     * @return True if SIM900 is ready
+     */
+    bool isReady();
+
+    /// Send a command to the SIM900 module.
+    void sendCommand(String message);
+
+    /// Get the response from the SIM900 module.
+    String getResponse();
 
     /**
      * 
@@ -163,7 +182,7 @@ public:
 
     /**
      * 
-     * @brief Send an SMS (Short Message Service).
+     * @brief Send an SMS (Short Message Service) in text-mode.
      *
      * This function sends an SMS message to a specified phone number.
      *
@@ -172,7 +191,29 @@ public:
      * @return True if the SMS is successfully sent, false otherwise.
      * 
      */
-    bool sendSMS(String number, String message);
+    bool sendSMS(const char* number, const char* message);
+
+    bool sendSMS1(String number, String message);
+
+        /**
+     * 
+     * @brief Send an SMS (Short Message Service) in PDU-format.
+     *
+     * This function sends an SMS message to a specified phone number.
+     *
+     * @param number The recipient's phone number.
+     * @param message The SMS message content.
+     * @return True if the SMS is successfully sent, false otherwise.
+     * 
+     */
+    bool sendSMS2(String number, String message);
+
+    int SMSReceived();
+    String readSMSFromSIM();
+    
+    SIM900_SMS readSMS();
+
+    SIM900_Handler_Event handleEvents();
 
     /**
      * 

@@ -61,6 +61,41 @@ typedef enum _SIM900DialResult {
     SIM900_DIAL_RESULT_OK
 } SIM900DialResult;
 
+typedef enum _SIM900SMSReceivedResult {
+    SIM900_SMS_AVAILABLE_RESULT_UNKNOWN,
+    SIM900_SMS_AVAILABLE_RESULT_ERROR,
+    SIM900_SMS_AVAILABLE_RESULT_OK,
+    SIM900_SMS_AVAILABLE_RESULT_CMT
+} _SIM900SMSReceivedResult;
+
+typedef enum _SIM900HandlerStatus { SIM900_NOTHING, SIM900_OK, SIM900_RING, SIM900_CLIP, SIM900_NOCARRIER, SIM900_CMT, SIM900_CMGS, SIM900_CFUN, SIM900_CPIN };
+
+typedef struct _SIM900_Handler_Event {
+    int status;
+
+    String phonenumber;
+
+    String message;
+
+    String datetime;
+} SIM900_Handler_Event;
+
+/**
+ * 
+ * @struct SIM900Operator
+ * @brief A structure representing mobile network operator information.
+ *
+ * This structure holds information about the mobile network operator's operating mode, format, and name.
+ * 
+ */
+typedef struct _SIM900_SMS {
+    String message;
+
+    String phonenumber;
+
+    String datetime;
+} SIM900_SMS;
+
 /**
  * 
  * @enum SIM900OperatorFormat
