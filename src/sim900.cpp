@@ -89,7 +89,143 @@ String SIM900::queryResult() {
     return result;
 }
 
-SIM900::SIM900(Stream& _sim900):sim900(_sim900){}
+SIM900::SIM900(Stream& _sim900):sim900(_sim900){
+    pinMode(STATUS_LED, OUTPUT);
+    pinMode(STATUS_LED_ERROR, OUTPUT);
+    pinMode(PWRKEY, OUTPUT);
+    pinMode(RST_PIN, OUTPUT); 
+    //this->bootstrap //?
+}
+
+bool SIM900::bootstrap() {
+  digitalWrite(PWRKEY, LOW); // Keep PWRKEY low initially
+  digitalWrite(RST_PIN, HIGH); // Keep SIM900 out of reset state
+  // led test
+  digitalWrite(STATUS_LED, HIGH);
+  digitalWrite(STATUS_LED_ERROR, HIGH);
+  delay(2000);
+
+  static bool reset_attempted = false;
+  int signal_strength = 0; // Declare variable at the top of the scope
+  String resp;
+  bool simcardOK = false;
+  bool signalOK = false;
+
+  digitalWrite(STATUS_LED, LOW);
+  digitalWrite(STATUS_LED_ERROR, LOW);
+  // stage 0
+  digitalWrite(STATUS_LED, HIGH); // stage 1
+  digitalWrite(STATUS_LED, LOW);
+  
+  Serial.println(F("--------------------------"));
+  Serial.println(F("Arduino SIM900 SMS WEATHER SERVICE"));
+  Serial.println(F("--------------------------"));
+  Serial.println(F("[#     ] stage1: status led"));
+  Serial.println(F("[##    ] stage2: serial ready")); // stage 2
+
+  Serial.println(F("[###   ] stage3: shield serial seems to be ready")); // stage 3
+  delay(1000);
+  // can we write to Serial1?
+  //Serial.println(F("[###   ] can we write to Serial1?"));
+  this->sim900.println(F("AT"));
+  Serial.println(F("[###   ] wrote 'AT'-command to Serial1"));
+  Serial.println(F("[###   ] trying to read from Serial1..."));
+  delay(400);
+  if(this->sim900.available()) {
+    String response;
+    if(this->sim900.available() > 0) {
+        response =  this->sim900.readString();
+        //response.trim();
+    }
+    //Serial.println();
+    Serial.println(F("[###   ] read ")); Serial.print(response.length()); Serial.println(F(" bytes"));
+    // stage 4
+    //Serial.print(F("response: ")); Serial.println(response);
+    if(response.length() > 0) Serial.println(F("[###   ] got a response."));
+    if(response.indexOf("ERROR") != -1) {
+      digitalWrite(STATUS_LED_ERROR, HIGH);
+      Serial.println(F("[###   ] did receive an 'AT ERROR'"));
+      return false;
+    }
+    if(response.indexOf("OK") != -1) {
+      Serial.println(F("[####  ] stage4: shield serial is ready")); // stage 4
+    } else {
+      digitalWrite(STATUS_LED_ERROR, HIGH);
+      Serial.println(F("[###   ] Error: did not receive valid response"));
+      Serial.println(F("[###   ] cannot read from shield serial. power down? check power state, check wiring"));
+      // reset; if test fails poweron
+      goto bootstrap_fail;
+    }
+  } else {
+    Serial.println(F("[###   ] Error: No serial data available from SIM900."));
+    goto bootstrap_fail;
+  }
+
+  // stage 5 handshake from library
+  if(this->handshake()) {
+    Serial.println(F("[##### ] stage5: handshaked!"));
+  } else {
+    Serial.println(F("[####  ] Error: handshake failed."));
+    goto bootstrap_fail;
+  }
+
+  // stage 6 sim cardok, signal strengthok, net status, receive calls, sms
+  this->sendCommand("AT+CPIN?");
+  resp = this->getResponse();
+  if(resp.indexOf("+CPIN: READY") != -1) {
+    simcardOK = true;
+    Serial.println(F("sim card is ready"));
+  } else {
+    digitalWrite(STATUS_LED_ERROR, HIGH);
+    Serial.println(F("sim card is not ready"));
+    return false;
+  }
+
+  signal_strength = measureSignalStrength();
+  signalOK = isSignalOk(signal_strength);
+  if(simcardOK && signalOK) {
+    Serial.println(F("[######] stage6: simcard is ready and signal is OK"));
+  } else {
+    digitalWrite(STATUS_LED_ERROR, HIGH);
+    return false;
+  }
+
+  reset_attempted = false; // Success, so reset the flag for the next time bootstrap might fail.
+  return true;
+
+bootstrap_fail:
+  digitalWrite(STATUS_LED_ERROR, HIGH);
+  Serial.println(F("bootstrap failed. attempting recovery..."));
+  if (!reset_attempted) {
+    this->reset();
+    reset_attempted = true;
+  } else {
+    this->powerOn();
+  }
+  return false;
+}
+
+void SIM900::reset()
+{
+  Serial.println(F("performing soft reset..."));
+  digitalWrite(RST_PIN, LOW); // Set the pin LOW to trigger reset
+  delay(100);                  // Wait briefly
+  digitalWrite(RST_PIN, HIGH);  // Set the pin HIGH to release from reset
+  delay(1000);                 // Wait for the module to restart
+}
+
+void SIM900::powerOn()
+{
+  Serial.println(F("performing power cycle..."));
+  digitalWrite(PWRKEY, HIGH);
+  delay(1000); // Hold PWRKEY for 1 second
+  digitalWrite(PWRKEY, LOW);
+
+  Serial.println(F("waiting for sim900 to be available..."));
+  delay(10000); // Wait for the module to boot
+
+  if(this->isReady()) Serial.println(F("sim900 is on and ready."));
+}
 
 bool SIM900::handshake() {
     this->sendCommand(F("AT"));
@@ -239,6 +375,57 @@ String SIM900::readSMSFromSIM() {
     return str;
 }
 
+int SIM900::rssiToDbm(int rssi) {
+  if (rssi == 99) {
+    return 999; // Represents "not known or not detectable"
+  }
+  if (rssi == 0) {
+    return -113;
+  }
+  if (rssi == 1) {
+    return -111;
+  }
+  if (rssi == 31) {
+    return -51;
+  }
+  if (rssi >= 2 && rssi <= 30) {
+    // Linear conversion for the main range
+    return -113 + (rssi * 2);
+  }
+  
+  return 999; // Return an error code for any other value
+}
+
+int SIM900::measureSignalStrength() {
+  SIM900Signal signal = this->signal(); // 0 - 31
+  int signal_rssi = signal.rssi;
+  digitalWrite(SIGNAL_LED1, LOW); digitalWrite(SIGNAL_LED2, LOW); digitalWrite(SIGNAL_LED3, LOW);
+  if(signal_rssi >= 0) { digitalWrite(SIGNAL_LED1, HIGH); }
+  if(signal_rssi >= 11) { digitalWrite(SIGNAL_LED2, HIGH); }
+  if(signal_rssi >= 21) { digitalWrite(SIGNAL_LED3, HIGH); }
+  //Serial.print(signal_rssi); // -113dBm to -51dBm
+  int signal_strength = rssiToDbm(signal_rssi);
+  Serial.print(F("signal strength: "));
+  Serial.print(signal_strength); // -113dBm to -51dBm
+  Serial.println(F("dBm"));
+  if (signal_rssi >= 2 && signal_rssi < 10) {
+    Serial.println(F("signal strength is marginal."));
+  }
+  if (signal_rssi >= 10 && signal_rssi <= 30) {
+    Serial.println(F("signal strength is OK."));
+  }
+  if(signal_rssi == 0 || signal_rssi == 1 || signal_rssi == 31) {
+    Serial.println(F("bad signal"));
+  }
+  return signal_rssi;
+}
+
+bool SIM900::isSignalOk(int signal_strength) {
+  if(signal_strength >= 10 && signal_strength <= 30) return true;
+  else return false;
+}
+
+
 SIM900Signal SIM900::signal() {
     SIM900Signal signal;
     signal.rssi = signal.bit_error_rate = 0;
@@ -349,41 +536,98 @@ String SIM900::readLine() {
     return str;
 }
 
+bool SIM900::sendSMSRoutine(const char* phonenumber, const char* message) {
+  if(strstr(phonenumber, "+43") == NULL) {
+    Serial.println(F("invalid phonenumber. only phonenumber from austria are allowed."));
+    return false;
+  }
+  const int max_retries = 2;
+  for(int retries = max_retries; retries > 0; retries--) {
+    delay(200);
+    if (!this->handshake()) {
+      Serial.println(F("handshake failed, retrying..."));
+      continue; // Skip to the next attempt
+    }
+
+    this->sim900.readString(); // Clear any lingering response from the buffer
+    Serial.println(F("sending sms..."));
+    Serial.print(F("phonenumber: \"")); Serial.print(phonenumber); Serial.println(F("\""));
+
+    bool sent = false;
+    if(strlen(message) > 0) {
+      Serial.print(F("message: ")); Serial.println(message);
+      sent = this->sendSMS(phonenumber, message); // Convert to String for the library function
+    } else {
+      Serial.println(F("no message to send."));
+    }
+
+    if (sent) {
+      return true; // Success! Exit the function.
+    }
+  }
+  return false;
+}
+
 bool SIM900::sendSMS(const char* number, const char* message) {
-    // 1. Set SMS text mode
+    Serial.println(F("sendSMS from library"));
+
+    // 1. Set SMS text mode and wait for "OK"
     this->sendCommand(F("AT+CMGF=1"));
     if(!this->isSuccessCommand()) return false;
 
-    // 2. Set character set to GSM for standard text
+    // 2. Set character set to GSM and wait for "OK"
     this->sendCommand(F("AT+CSCS=\"GSM\""));
     if(!this->isSuccessCommand()) return false;
 
     // 3. Send phone number
-    String command = String("AT+CMGS=\"");
-    command.concat(String(number));
-    command.concat("\"");
+    char command[40];
+    snprintf(command, sizeof(command), "AT+CMGS=\"%s\"", number);
     this->sendCommand(command);
 
     // 4. Wait for the ">" prompt
-    String response = "";
+   String response = this->getResponse();
+    if (response.indexOf('>') == -1) return false; // Didn't get prompt
+    delay(100);
     unsigned long startTime = millis();
-    while (millis() - startTime < 3000) { // 2 second timeout
-        if (this->sim900.available()) {
-            response = this->sim900.readString();
-            if (response.indexOf('>') != -1) {
-                break;
-            }
+    while (millis() - startTime < 3000) { // 2-second timeout
+        if (this->sim900.peek() == '>') {
+            this->sim900.read(); // Consume the '>'
+            // 5. Send message content and Ctrl+Z
+            this->sim900.print(message);
+            this->sim900.write(0x1A);
+            return true; // Assume success after sending Ctrl+Z
         }
     }
-    if (response.indexOf('>') == -1) return false; // Didn't get prompt
-    //delay(500);
 
     // 5. Send message content and Ctrl+Z
     this->sim900.print(message);
-    //delay(500);
+    delay(500);
     this->sim900.write(0x1A);
-    Serial.println("message sent");
-    return true;
+    Serial.println("message and ctrl-z sent, waiting for confirmation...");
+
+    // 6. Wait for +CMGS confirmation or ERROR
+    // The module can take several seconds to send the SMS
+    startTime = millis();
+    while (millis() - startTime < 10000) { // 10-second timeout
+        if (this->sim900.available()) {
+            String line = this->sim900.readStringUntil('\n');
+            line.trim();
+            //Serial.print("\"");
+            //Serial.print(line);
+            //Serial.println("\"");
+            if (line.startsWith(F("+CMGS:"))) {
+                Serial.println("sms sent successfully (+CMGS).");
+                return true; // Success!
+            }
+            if (line.startsWith(F("+CMS ERROR:")) || line.startsWith(F("ERROR"))) {
+                Serial.println("sms failed to send (ERROR).");
+                return false; // Failure
+            }
+        }
+    }
+
+    Serial.println("timed out waiting for sms confirmation.");
+    return false; // Timed out
 }
 
 bool SIM900::sendSMS2(String number, String message) {

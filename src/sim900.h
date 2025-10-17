@@ -24,6 +24,15 @@
 #ifndef SIM900_H
 #define SIM900_H
 
+#define STATUS_LED 12
+#define STATUS_LED_ERROR 11
+#define SIGNAL_LED1 4
+#define SIGNAL_LED2 3
+#define SIGNAL_LED3 2
+
+#define RST_PIN 8
+#define PWRKEY 9
+
 #include <Arduino.h>
 
 #include "sim900_defs.h"
@@ -42,6 +51,16 @@ class SIM900 {
 private:
     /// The SoftwareSerial object used for communication with the SIM900 module.
     Stream& sim900;
+
+    void reset();
+
+    void powerOn();
+
+    int rssiToDbm(int rssi);
+
+    int measureSignalStrength();
+
+    bool isSignalOk(int signal_strength);
 
     /// A flag indicating whether Access Point Name (APN) configuration is set.
     bool hasAPN = false;
@@ -79,6 +98,8 @@ public:
      * 
      */
     SIM900(Stream& _sim900);
+
+    bool bootstrap();
 
     /**
      * @brief returns true if SIM900 is ready to receive calls, smss and commands   
@@ -179,6 +200,8 @@ public:
      * 
      */
     bool hangUp();
+
+    bool sendSMSRoutine(const char* phonenumber, const char* message);
 
     /**
      * 
