@@ -138,7 +138,7 @@ bool SIM900::bootstrap() {
         //response.trim();
     }
     //Serial.println();
-    Serial.println(F("[###   ] read ")); Serial.print(response.length()); Serial.println(F(" bytes"));
+    Serial.print(F("[###   ] read ")); Serial.print(response.length()); Serial.println(F(" bytes"));
     // stage 4
     //Serial.print(F("response: ")); Serial.println(response);
     if(response.length() > 0) Serial.println(F("[###   ] got a response."));
@@ -174,10 +174,10 @@ bool SIM900::bootstrap() {
   resp = this->getResponse();
   if(resp.indexOf("+CPIN: READY") != -1) {
     simcardOK = true;
-    Serial.println(F("sim card is ready"));
+    Serial.println(F("[##### ] sim card is ready"));
   } else {
     digitalWrite(STATUS_LED_ERROR, HIGH);
-    Serial.println(F("sim card is not ready"));
+    Serial.println(F("[##### ] sim card is not ready"));
     return false;
   }
 
@@ -237,6 +237,13 @@ bool SIM900::isCardReady() {
     return this->isSuccessCommand();
 }
 
+bool SIM900::setPhoneNumber(const char* number) {
+    strncpy(this->phonenumber, number, sizeof(this->phonenumber) - 1);
+    this->phonenumber[sizeof(this->phonenumber) - 1] = '\0'; // Ensure null termination
+    if(sizeof(this->phonenumber) > 0) return true;
+    return false;
+}
+
 bool SIM900::changeCardPin(uint8_t pin) {
     if(pin > 9999)
         return false;
@@ -269,6 +276,12 @@ int SIM900::SMSReceived() {
 
 SIM900_SMS SIM900::sms;
 
+std::vector<std::unique_ptr<EventListener>> listeners;
+
+void registerListener(std::unique_ptr<EventListener> listener)  {
+    listeners.push_back(std::move(listener));
+}
+
 SIM900_Handler_Event SIM900::handleEvents() {
     const char* OK_REPLY = "OK";
     const char* RING_REPLY = "RING";
@@ -297,9 +310,21 @@ SIM900_Handler_Event SIM900::handleEvents() {
 
         if (strcmp(msgBuffer, RING_REPLY) == 0) {
           handlerState.status = SIM900_RING;
+          if (!listeners.empty()) {
+            for(int it = 0; it < listeners.size(); it++) {
+            EventListener* listener = listeners.at(it).get();
+            if(listener->type == SIM900_RING) { listener->execute(); }
+            }
+          }
         } else if (strcmp(msgBuffer, OK_REPLY) == 0) {
           handlerState.status = SIM900_OK;
           msgIdx = 0;
+          if (!listeners.empty()) {
+            for(int it = 0; it < listeners.size(); it++) {
+            EventListener* listener = listeners.at(it).get();
+            if(listener->type == SIM900_OK) { listener->execute(); }
+            }
+          }
           return handlerState;
         } else if (strcmp(msgBuffer, NO_CARRIER_REPLY) == 0) {
           handlerState.status = SIM900_NOCARRIER;
@@ -405,17 +430,17 @@ int SIM900::measureSignalStrength() {
   if(signal_rssi >= 21) { digitalWrite(SIGNAL_LED3, HIGH); }
   //Serial.print(signal_rssi); // -113dBm to -51dBm
   int signal_strength = rssiToDbm(signal_rssi);
-  Serial.print(F("signal strength: "));
-  Serial.print(signal_strength); // -113dBm to -51dBm
-  Serial.println(F("dBm"));
+  //Serial.print(F("signal strength: "));
+  //Serial.print(signal_strength); // -113dBm to -51dBm
+  //Serial.println(F("dBm"));
   if (signal_rssi >= 2 && signal_rssi < 10) {
-    Serial.println(F("signal strength is marginal."));
+    //Serial.println(F("signal strength is marginal."));
   }
   if (signal_rssi >= 10 && signal_rssi <= 30) {
-    Serial.println(F("signal strength is OK."));
+    //Serial.println(F("signal strength is OK."));
   }
   if(signal_rssi == 0 || signal_rssi == 1 || signal_rssi == 31) {
-    Serial.println(F("bad signal"));
+    //Serial.println(F("bad signal"));
   }
   return signal_rssi;
 }
@@ -568,8 +593,12 @@ bool SIM900::sendSMSRoutine(const char* phonenumber, const char* message) {
   return false;
 }
 
+bool SIM900::sendSMSRoutine(const char* message) {
+  this->sendSMSRoutine(this->phonenumber, message);
+}
+
 bool SIM900::sendSMS(const char* number, const char* message) {
-    Serial.println(F("sendSMS from library"));
+    Serial.println(F("sendSMS"));
 
     // 1. Set SMS text mode and wait for "OK"
     this->sendCommand(F("AT+CMGF=1"));

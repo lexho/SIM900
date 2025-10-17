@@ -34,8 +34,29 @@
 #define PWRKEY 9
 
 #include <Arduino.h>
+#include <memory> // For std::unique_ptr
+#include <vector> // For std::vector
 
 #include "sim900_defs.h"
+
+// Declare the EventListener base class
+class EventListener {
+public:
+    // Virtual destructor is crucial for proper cleanup of derived objects through base pointers
+    virtual ~EventListener() = default;
+    virtual bool execute() {
+        // Default implementation, can be overridden by derived classes
+        // Removed std::cout as it's not standard Arduino practice
+        return true;
+    }
+    int type = 0; // Member to identify event type
+};
+
+// Declare the global listeners vector (extern means it's defined elsewhere)
+extern std::vector<std::unique_ptr<EventListener>> listeners;
+
+// Declare the global registerListener function
+void registerListener(std::unique_ptr<EventListener> listener);
 
 /**
  * 
@@ -51,6 +72,7 @@ class SIM900 {
 private:
     /// The SoftwareSerial object used for communication with the SIM900 module.
     Stream& sim900;
+    // Removed the private forward declaration of EventListener, as it's now a global class.
 
     void reset();
 
@@ -122,6 +144,10 @@ public:
      * 
      */
     bool handshake();
+
+    char phonenumber[14]; //+43xxxxxxxxxx 
+    unsigned long lastRingMessageTime = 0; // Timestamp for the last "ringing" message
+    bool calling = false;
 
     /**
      * 
@@ -203,6 +229,8 @@ public:
 
     bool sendSMSRoutine(const char* phonenumber, const char* message);
 
+    bool sendSMSRoutine(const char* message);
+
     /**
      * 
      * @brief Send an SMS (Short Message Service) in text-mode.
@@ -237,6 +265,8 @@ public:
     SIM900_SMS readSMS();
 
     SIM900_Handler_Event handleEvents();
+
+    bool setPhoneNumber(const char* number);
 
     /**
      * 
