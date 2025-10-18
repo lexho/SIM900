@@ -1,34 +1,12 @@
 #include <sim900.h>
 
 bool led_state = LOW;
-
 unsigned long start_time_buffer = 0;
-char buffer[161]; // Max SMS length + null terminator
-char buffer_old[161];
-unsigned long dataset_age = 0; // in milliseconds since midnight
-
-bool sendSMS = false;
-
-bool smsSent = false;
-
-int event_status_old = 0;
 unsigned long rtcSyncTime = 0; // For rollover-safe daily tasks
-const unsigned long oneDay = 1000UL * 60 * 60 * 24; // Use UL to prevent int overflow during calculation
-const unsigned long oneMinute = 60UL * 1000; // 60,000 milliseconds
 
 const byte serialCmdBufferSize = 255;
 char serialCmdBuffer[serialCmdBufferSize];
 byte serialCmdBufferIdx = 0;
-
-uint8_t day;
-uint8_t month;
-uint8_t year;
-
-uint8_t hour;
-uint8_t minute;
-uint8_t second;
-unsigned long rtcSyncMillis = 0; // millis() value at the last RTC sync
-unsigned long rtcSyncMilliSeconds = 0; // Time in seconds since midnight at the last RTC sync
 
 SIM900 sim900(Serial1);
 
@@ -40,6 +18,7 @@ public:
 
 // Define the OnCallListener class at the global scope
 class OnCallListener : public EventListener {
+  unsigned long lastRingMessageTime = 0; // Timestamp for the last "ringing" message
 public:
     OnCallListener() {
       type = SIM900_RING; // Set the type inherited from EventListener
@@ -47,21 +26,102 @@ public:
 
     bool execute() override {
         // This code will now be executed from within sim900.handleEvents()
-        //Serial.println(F("RING event (from listener)"));
-        if (!sim900.calling) { // On the very first ring, set the state and start time.
-          sim900.calling = true; 
-          sim900.lastRingMessageTime = millis(); // Set initial time for the first message
+        if (!sim900.isCalling()) { // On the very first ring, set the state and start time.
+          sim900.calling = true;
+          lastRingMessageTime = millis(); // Set initial time for the first message
           Serial.println(F("someone is calling..."));
         }
-
-        //Serial.print(F("calling: ")); Serial.println(sim900.calling);
-        //Serial.print(F("lastRingMessageTime: ")); Serial.println(sim900.lastRingMessageTime);
-        if(sim900.calling && (millis() - sim900.lastRingMessageTime > 1000)) {
-          Serial.print(sim900.phonenumber); Serial.println(F(" is calling..."));
-          sim900.lastRingMessageTime = millis();
+        
+        if(sim900.isCalling() && (millis() - lastRingMessageTime > 1000)) {
+          Serial.print(sim900.getPhoneNumber()); Serial.println(F(" is calling..."));
+          lastRingMessageTime = millis();
         }
         return true;
     }
+};
+
+class OnNOCARRIERListener : public EventListener {
+  char buffer[161];  // Max SMS length + null terminator
+  char buffer_old[161];
+public:
+  OnNOCARRIERListener() {
+    type = SIM900_NOCARRIER;
+    buffer[0] = '\0';      // Initialize buffer to an empty string
+    buffer_old[0] = '\0';  // Initialize buffer_old 
+  }
+
+  uint8_t day;
+  uint8_t month;
+  uint8_t year;
+  const unsigned long oneDay = 1000UL * 60 * 60 * 24;
+  const unsigned long oneMinute = 60UL * 1000; // 60,000 milliseconds
+  unsigned long message_age = 0; // in milliseconds since midnight
+  unsigned long rtcSyncMillis = 0; // millis() value at the last RTC sync
+  unsigned long rtcMilliSeconds = 0; // Time in seconds since midnight at the last RTC sync
+
+  // Store the time from RTC and the millis() value at the time of sync
+  void storeRTC(SIM900RTC rtc) {
+    day = rtc.day;
+    month = rtc.month;
+    year = rtc.year;
+    rtcSyncMillis = millis();
+    rtcMilliSeconds = ((unsigned long)rtc.hour * 3600UL + (unsigned long)rtc.minute * 60UL + (unsigned long)rtc.second) * 1000UL;
+  }
+
+  // Calculate elapsed seconds since last sync, safe from millis() rollover
+  unsigned long getMillisSinceMidnight() {
+    unsigned long elapsedMillis = millis() - rtcSyncMillis;
+    return (rtcMilliSeconds + elapsedMillis) % oneDay;
+  }
+
+  bool sendBufferedMessageViaSMS() {
+    if((message_age + oneMinute*4) > getMillisSinceMidnight()) { // is dataset older than 4 minutes?
+      return sim900.sendSMSRoutine(buffer);
+    } else {
+      return sim900.sendSMSRoutine("Keine aktuellen Wetterdaten verfugbar.");
+    }
+  }
+
+  void copyToBuffer(const char* message) {
+    strncpy(buffer, message, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';  // GUARANTEE null termination
+  }
+
+  int sizeOfBuffer() {
+    return sizeof(buffer);
+  }
+
+  void printBuffer() {
+    if (strcmp(buffer, buffer_old) != 0 && strlen(buffer) > 0) {
+      Serial.print(F("buffer: \""));
+      Serial.print(buffer);
+      Serial.println("\"");
+      strcpy(buffer_old, buffer);
+    }
+  }
+
+  bool execute() override {
+    if(sim900.isCalling()) {
+      sim900.calling = false;
+      Serial.println(F("call ended. preparing to send sms..."));
+      sendBufferedMessageViaSMS();
+    }
+  }
+};
+
+OnNOCARRIERListener* onNocarrierPtr = nullptr;
+
+class OnCMTListener : public EventListener {
+public:
+  OnCMTListener() { type = SIM900_CMT; }
+  bool execute() override { 
+    // Clear the serial buffer to discard the SMS message body, as we don't need it.
+    //while(Serial1.available()) { Serial1.read(); }
+    sim900.clearBuffer();
+    Serial.print(F("received an sms from "));
+    Serial.println(sim900.getPhoneNumber());
+    onNocarrierPtr->sendBufferedMessageViaSMS();
+  }
 };
 
 void setup() {
@@ -69,20 +129,25 @@ void setup() {
   Serial1.begin(9600);
   while(!Serial);
   while(!Serial1);
-  //sim900.bootstrap();
   while(!sim900.bootstrap()) {
     delay(5000); // Wait before retrying
   }
 
-  SIM900RTC current = sim900.rtc();
-  storeRTC(current);
-  printRTC(current);
-
   // Create and register the listener so it's ready for events.
   auto onOK = std::make_unique<OnOKListener>();
-  registerListener(std::move(onOK));
   auto onCall = std::make_unique<OnCallListener>();
-  registerListener(std::move(onCall)); // register a on call listener which prints " is calling" to Serial
+  auto onNocarrier = std::make_unique<OnNOCARRIERListener>();
+  auto onCmt = std::make_unique<OnCMTListener>();
+  onNocarrierPtr = onNocarrier.get();
+  sim900.registerListener(std::move(onOK));
+  sim900.registerListener(std::move(onCall)); // register a on call listener which prints " is calling" to Serial
+  sim900.registerListener(std::move(onNocarrier));
+  sim900.registerListener(std::move(onCmt));
+
+  // Get time from rtc and store it in the listener *after* it has been created.
+  SIM900RTC current = sim900.rtc();
+  onNocarrierPtr->storeRTC(current);
+  printRTC(current);
 
   Serial.println(F("waiting for incoming data..."));
 }
@@ -90,56 +155,24 @@ void setup() {
 void loop() {
   digitalWrite(STATUS_LED, led_state); led_state = !led_state;
 
-  // Rollover-safe check if 5 seconds have passed
-  if (millis() - start_time_buffer >= 5000) {
-    if(strcmp(buffer, buffer_old) != 0 && strlen(buffer) > 0) { 
-      Serial.print(F("buffer: "));
-      Serial.println(buffer);
-      strcpy(buffer_old, buffer);
-    }
+  // Every 2 seconds print the message in the buffer
+  if (millis() - start_time_buffer >= 2000) {
+    start_time_buffer = millis();
+    onNocarrierPtr->printBuffer();
   }
 
-  // Rollover-safe check to update RTC once per day
-  if (millis() - rtcSyncTime >= oneDay) {
-    rtcSyncTime = millis(); // Reset the timer for the next day
+  // Update RTC once per day
+  if (millis() - rtcSyncTime >= onNocarrierPtr->oneDay) {
+    rtcSyncTime = millis();
     SIM900RTC current = sim900.rtc();
-    storeRTC(current);
+    onNocarrierPtr->storeRTC(current);
   }
-
 
   /*while(Serial1.available()) {
     Serial.write(Serial1.read());
   }*/
 
   SIM900_Handler_Event event = sim900.handleEvents();
-  // If a RING event is detected, set the 'calling' state.
-  if(event.status == SIM900_CLIP) {
-    sim900.setPhoneNumber(event.phonenumber.c_str());
-  };
-  if (event.status == SIM900_CMT) {
-    // An SMS has arrived. Capture the sender's phone number.
-    sim900.setPhoneNumber(event.phonenumber.c_str());
-
-    // Clear the serial buffer to discard the SMS message body, as we don't need it.
-    while(Serial1.available()) { Serial1.read(); }
-    Serial.print(F("received an sms from "));
-    Serial.println(sim900.phonenumber);
-    sendSMS = true; // Trigger SMS for incoming text messages as before
-  }
-  if(event.status == SIM900_CMGS) { if(!smsSent) { Serial.println(F("sms sent.")); smsSent = true; } }
-  if (event.status == SIM900_NOCARRIER && sim900.calling) {
-    Serial.println(F("call ended. preparing to send sms..."));
-    sim900.calling = false; // Reset the calling state
-    sendSMS = true;  // Set the flag to send the SMS
-  }
-  if (sendSMS) {
-    if((dataset_age + oneMinute*4) > getMillisSinceMidnight()) {
-      sim900.sendSMSRoutine(buffer);
-    } else {
-      sim900.sendSMSRoutine("Keine aktuellen Wetterdaten verfugbar.");
-    }
-    sendSMS = false;
-  }
 
   // Non-blocking serial command reader
   while (Serial.available() > 0) {
@@ -177,8 +210,8 @@ void parseCommand(const char* command) {
 
     if (strlen(message) > 0) { // We have data to parse
       // Ensure the message isn't too long for our buffer
-      if (strlen(message) >= sizeof(buffer)) {
-        Serial.print(F("Error: message is too long\n"));
+      if (strlen(message) >= onNocarrierPtr->sizeOfBuffer()) {
+        Serial.print(F("error: message is too long\n"));
         return;
       }
       // Find "time: HH:MM:SS" and parse it
@@ -188,14 +221,12 @@ void parseCommand(const char* command) {
         unsigned long total_seconds = ((time_ptr[0] - '0') * 10UL + (time_ptr[1] - '0')) * 3600UL +
                                       ((time_ptr[3] - '0') * 10UL + (time_ptr[4] - '0')) * 60UL +
                                       ((time_ptr[6] - '0') * 10UL + (time_ptr[7] - '0'));
-        dataset_age = total_seconds * 1000UL;
+        onNocarrierPtr->message_age = total_seconds * 1000UL;
       }
       // Safely copy the message to the global buffer
-      strncpy(buffer, message, sizeof(buffer) - 1);
-      buffer[sizeof(buffer) - 1] = '\0'; // GUARANTEE null termination
+      onNocarrierPtr->copyToBuffer(message);
     } else {
-      // The command was just "storebuffer" with no data. Print current buffer.
-      Serial.print("current buffer: "); Serial.print(buffer); Serial.print('\n');
+      onNocarrierPtr->printBuffer();
     }
 
   } else if (strcmp(command, "time") == 0) {
@@ -204,58 +235,39 @@ void parseCommand(const char* command) {
     while(millis() % 1000 != 0); // print time at precise time intervals
     Serial.print("time: "); Serial.println(timeBuffer);
   } else if (strncmp(command, "sendsms", 7) == 0) {
-    Serial.println(F("sendsms"));
-    // The logic for sendsms using String is complex to convert without
-    // more context on the exact format. Leaving as-is for now, but be
-    // aware it still uses heap allocation.
+    // C-string implementation to parse "sendsms [phonenumber] [message]"
+    const char* phone_start = strchr(command, ' ');
+    if (phone_start == nullptr) {
+      Serial.println(F("error: malformed sendsms command. usage: sendsms <number> <message>"));
+      return;
+    }
+    phone_start++; // Move past the first space
 
-    String cmdStr(command);
-    int start = cmdStr.indexOf("sendsms") + 8;
-    int end = cmdStr.indexOf(" ", start + 1);
-    //String phonenumber = cmdStr.substring(start + 1, end);
-    start = end + 1;
-    end = cmdStr.indexOf('\n');
-    String message1 = cmdStr.substring(start, end);
-
-    char* space = strchr(command, ' ');
-    char* phonenumber;
-    //const char* message;
-    if (space != NULL) {
-      phonenumber = space+1;
-      char* end = strchr(phonenumber+1, ' ');
-      phonenumber[13] = '\0';
+    const char* message_start = strchr(phone_start, ' ');
+    if (message_start == nullptr) {
+      Serial.println(F("error: malformed sendsms command. missing message."));
+      return;
     }
 
-    Serial.print(F("phonenumber: ")); Serial.println(phonenumber);
-    Serial.print(F("message: ")); Serial.println(message1);
-    const char* message = message1.c_str();
-    if (sizeof(phonenumber) > 0 && message1.length() > 0) {
-      sim900.sendSMSRoutine(phonenumber, message);
+    // Extract the phone number into a separate buffer
+    char phonenumber[20]; // Buffer for the phone number
+    size_t phone_len = message_start - phone_start;
+    if (phone_len > 0 && phone_len < sizeof(phonenumber)) {
+      strncpy(phonenumber, phone_start, phone_len);
+      phonenumber[phone_len] = '\0'; // Null-terminate the phone number string
+
+      message_start++; // Move past the space to the actual message
+      sim900.sendSMSRoutine(phonenumber, message_start);
     } else {
-      Serial.println(F("sms could not be sent."));
+      Serial.println(F("error: invalid phone number."));
     }
   }  //else
-}
-
-void storeRTC(SIM900RTC rtc) {
-  day = rtc.day;
-  month = rtc.month;
-  year = rtc.year;
-
-  // Store the time from RTC and the millis() value at the time of sync
-  rtcSyncMillis = millis();
-  // Convert total seconds since midnight to milliseconds for the base time
-  rtcSyncMilliSeconds = ((unsigned long)rtc.hour * 3600UL + (unsigned long)rtc.minute * 60UL + (unsigned long)rtc.second) * 1000UL;
-
-  // For debug printing, we can still use the individual components
-  Serial.print(F("stored datetime: "));
-  printRTC(rtc);
 }
 
 // hour:minute:seconds
 void getFakeHardwareClockTime(char* buffer, size_t bufferSize) {
   // This function still works with seconds for display purposes
-  unsigned long now_seconds = getMillisSinceMidnight() / 1000UL;
+  unsigned long now_seconds = onNocarrierPtr->getMillisSinceMidnight() / 1000UL;
   
   int s = now_seconds % 60;
   unsigned long total_minutes = now_seconds / 60;
@@ -265,16 +277,10 @@ void getFakeHardwareClockTime(char* buffer, size_t bufferSize) {
 
   snprintf(buffer, bufferSize,
            "%02u.%02u.%02u %02u:%02u:%02u",
-           day, month, year,
+           onNocarrierPtr->day, onNocarrierPtr->month, onNocarrierPtr->year,
            h, min, s);
 }
 
-// returns milliseconds since midnight
-unsigned long getMillisSinceMidnight() {
-  // Calculate elapsed seconds since last sync, safe from millis() rollover
-  unsigned long elapsedMillis = millis() - rtcSyncMillis;
-  return (rtcSyncMilliSeconds + elapsedMillis) % oneDay;
-}
 
 void printRTC(SIM900RTC datetime) {
   int day = datetime.day;

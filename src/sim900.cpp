@@ -89,11 +89,12 @@ String SIM900::queryResult() {
     return result;
 }
 
-SIM900::SIM900(Stream& _sim900):sim900(_sim900){
+SIM900::SIM900(Stream& _sim900):sim900(_sim900) {
     pinMode(STATUS_LED, OUTPUT);
     pinMode(STATUS_LED_ERROR, OUTPUT);
     pinMode(PWRKEY, OUTPUT);
-    pinMode(RST_PIN, OUTPUT); 
+    pinMode(RST_PIN, OUTPUT);
+    calling = false;
     //this->bootstrap //?
 }
 
@@ -128,8 +129,8 @@ bool SIM900::bootstrap() {
   // can we write to Serial1?
   //Serial.println(F("[###   ] can we write to Serial1?"));
   this->sim900.println(F("AT"));
-  Serial.println(F("[###   ] wrote 'AT'-command to Serial1"));
-  Serial.println(F("[###   ] trying to read from Serial1..."));
+  //Serial.println(F("[###   ] wrote 'AT'-command to Serial1"));
+  //Serial.println(F("[###   ] trying to read from Serial1..."));
   delay(400);
   if(this->sim900.available()) {
     String response;
@@ -138,10 +139,10 @@ bool SIM900::bootstrap() {
         //response.trim();
     }
     //Serial.println();
-    Serial.print(F("[###   ] read ")); Serial.print(response.length()); Serial.println(F(" bytes"));
+    //Serial.print(F("[###   ] read ")); Serial.print(response.length()); Serial.println(F(" bytes"));
     // stage 4
     //Serial.print(F("response: ")); Serial.println(response);
-    if(response.length() > 0) Serial.println(F("[###   ] got a response."));
+    //if(response.length() > 0) Serial.println(F("[###   ] got a response."));
     if(response.indexOf("ERROR") != -1) {
       digitalWrite(STATUS_LED_ERROR, HIGH);
       Serial.println(F("[###   ] did receive an 'AT ERROR'"));
@@ -151,21 +152,22 @@ bool SIM900::bootstrap() {
       Serial.println(F("[####  ] stage4: shield serial is ready")); // stage 4
     } else {
       digitalWrite(STATUS_LED_ERROR, HIGH);
-      Serial.println(F("[###   ] Error: did not receive valid response"));
+      Serial.println(F("[###   ] error: did not receive valid response"));
       Serial.println(F("[###   ] cannot read from shield serial. power down? check power state, check wiring"));
       // reset; if test fails poweron
       goto bootstrap_fail;
     }
   } else {
-    Serial.println(F("[###   ] Error: No serial data available from SIM900."));
+    Serial.println(F("[###   ] error: No serial data available from SIM900."));
     goto bootstrap_fail;
   }
+  delay(3000);
 
   // stage 5 handshake from library
   if(this->handshake()) {
     Serial.println(F("[##### ] stage5: handshaked!"));
   } else {
-    Serial.println(F("[####  ] Error: handshake failed."));
+    Serial.println(F("[####  ] error: handshake failed."));
     goto bootstrap_fail;
   }
 
@@ -174,7 +176,7 @@ bool SIM900::bootstrap() {
   resp = this->getResponse();
   if(resp.indexOf("+CPIN: READY") != -1) {
     simcardOK = true;
-    Serial.println(F("[##### ] sim card is ready"));
+    //Serial.println(F("[##### ] sim card is ready"));
   } else {
     digitalWrite(STATUS_LED_ERROR, HIGH);
     Serial.println(F("[##### ] sim card is not ready"));
@@ -252,34 +254,39 @@ bool SIM900::changeCardPin(uint8_t pin) {
     return this->isSuccessCommand();
 }
 
-int SIM900::SMSReceived() {
-    this->sendCommand("AT+CMGF=1");
-    delay(100);
-    this->sendCommand("AT+CNMI=2,2,0,0,0");
-    delay(100);
-
-    String response = this->getResponse();
-
-    if(response.indexOf("+CMT: ") == -1) return SIM900_SMS_AVAILABLE_RESULT_UNKNOWN;
-
-    int result = SIM900_SMS_AVAILABLE_RESULT_UNKNOWN;
-    String mode = this->getReturnedMode();
-
-    if(mode == F("+CMT"))
-        result = SIM900_SMS_AVAILABLE_RESULT_CMT;
-    else if(mode == F("OK"))
-        result = SIM900_SMS_AVAILABLE_RESULT_OK;
-    else if(mode == F("ERROR"))
-        result = SIM900_SMS_AVAILABLE_RESULT_ERROR;
-    return result;
+const char* SIM900::extract(char* line, const char delim) {
+    char* start = strchr(line, delim);
+    if (start) {
+        start++; // Move past the opening delimiter
+        char* end = strchr(start, delim);
+        if (end) {
+            *end = '\0'; // Terminate the substring
+            return start;
+        }
+    }
+    return "";
 }
 
 SIM900_SMS SIM900::sms;
 
-std::vector<std::unique_ptr<EventListener>> listeners;
+const char* SIM900::getPhoneNumber() {
+  return phonenumber;
+}
 
-void registerListener(std::unique_ptr<EventListener> listener)  {
-    listeners.push_back(std::move(listener));
+void SIM900::setLastRingMessageTime(unsigned long time) {
+  lastRingMessageTime = time;
+}
+
+bool SIM900::isCalling() {
+  return calling;
+}
+
+void SIM900::clearBuffer() {
+  while(this->sim900.available()) { this->sim900.read(); }
+}
+
+void SIM900::registerListener(std::unique_ptr<EventListener> listener)  {
+    this->listeners.push_back(std::move(listener));
 }
 
 SIM900_Handler_Event SIM900::handleEvents() {
@@ -310,54 +317,49 @@ SIM900_Handler_Event SIM900::handleEvents() {
 
         if (strcmp(msgBuffer, RING_REPLY) == 0) {
           handlerState.status = SIM900_RING;
-          if (!listeners.empty()) {
-            for(int it = 0; it < listeners.size(); it++) {
-            EventListener* listener = listeners.at(it).get();
+          if (!this->listeners.empty()) {
+            for(const auto& listener : this->listeners) {
             if(listener->type == SIM900_RING) { listener->execute(); }
             }
           }
         } else if (strcmp(msgBuffer, OK_REPLY) == 0) {
           handlerState.status = SIM900_OK;
           msgIdx = 0;
-          if (!listeners.empty()) {
-            for(int it = 0; it < listeners.size(); it++) {
-            EventListener* listener = listeners.at(it).get();
-            if(listener->type == SIM900_OK) { listener->execute(); }
+          if (!this->listeners.empty()) {
+            for(const auto& listener : this->listeners) {
+              if(listener->type == SIM900_OK) { listener->execute(); }
             }
           }
           return handlerState;
         } else if (strcmp(msgBuffer, NO_CARRIER_REPLY) == 0) {
           handlerState.status = SIM900_NOCARRIER;
           msgIdx = 0;
+          if (!this->listeners.empty()) {
+            for(const auto& listener : this->listeners) {
+              if(listener->type == SIM900_NOCARRIER) { listener->execute(); }
+            }
+          }
           return handlerState;
         } else if (strstr(msgBuffer, CMGS_REPLY) != NULL) {
           handlerState.status = SIM900_CMGS;
           msgIdx = 0;
           return handlerState;
         } else if (strstr(msgBuffer, CLIP_REPLY) != NULL) {
-          char* start = strchr(msgBuffer, '"');
-          if (start) {
-            start++;
-            char* end = strchr(start, '"');
-            if (end) {
-              *end = '\0';
-              handlerState.phonenumber = start;
-            }
-          }
+          const char* phonenr = this->extract(msgBuffer, '"');
+          this->setPhoneNumber(phonenr);
+          handlerState.phonenumber = phonenr;
           handlerState.status = SIM900_CLIP;
           // Don't return yet, RING might be followed by other data.
         } else if (strstr(msgBuffer, CMT_REPLY) != NULL) {
-          char* start = strchr(msgBuffer, '"');
-          if (start) {
-            start++;
-            char* end = strchr(start, '"');
-            if (end) {
-              *end = '\0';
-              handlerState.phonenumber = start;
+          const char* phonenr = this->extract(msgBuffer, '"');
+          this->setPhoneNumber(phonenr);
+          handlerState.phonenumber = phonenr;
+          handlerState.status = SIM900_CMT;
+          if (!this->listeners.empty()) {
+            for(const auto& listener : this->listeners) {
+              if(listener->type == SIM900_CMT) { listener->execute(); }
             }
           }
-          handlerState.status = SIM900_CMT;
-          // The main .ino file is now responsible for reading the next line (the message body).
           msgIdx = 0;
           return handlerState;
         }
@@ -562,8 +564,11 @@ String SIM900::readLine() {
 }
 
 bool SIM900::sendSMSRoutine(const char* phonenumber, const char* message) {
+  bool validPhoneNumber = true;
+  bool validMessage = true;
   if(strstr(phonenumber, "+43") == NULL) {
-    Serial.println(F("invalid phonenumber. only phonenumber from austria are allowed."));
+    Serial.println(F("invalid phonenumber. only phonenumber from Austria are allowed."));
+    validPhoneNumber = false;
     return false;
   }
   const int max_retries = 2;
@@ -584,12 +589,14 @@ bool SIM900::sendSMSRoutine(const char* phonenumber, const char* message) {
       sent = this->sendSMS(phonenumber, message); // Convert to String for the library function
     } else {
       Serial.println(F("no message to send."));
+      validMessage = false;
     }
 
     if (sent) {
       return true; // Success! Exit the function.
     }
   }
+  if(validPhoneNumber && validMessage) this->bootstrap(); // reset SIM900
   return false;
 }
 
@@ -598,8 +605,6 @@ bool SIM900::sendSMSRoutine(const char* message) {
 }
 
 bool SIM900::sendSMS(const char* number, const char* message) {
-    Serial.println(F("sendSMS"));
-
     // 1. Set SMS text mode and wait for "OK"
     this->sendCommand(F("AT+CMGF=1"));
     if(!this->isSuccessCommand()) return false;
@@ -645,7 +650,7 @@ bool SIM900::sendSMS(const char* number, const char* message) {
             //Serial.print(line);
             //Serial.println("\"");
             if (line.startsWith(F("+CMGS:"))) {
-                Serial.println("sms sent successfully (+CMGS).");
+                Serial.println("sms sent successfully.");
                 return true; // Success!
             }
             if (line.startsWith(F("+CMS ERROR:")) || line.startsWith(F("ERROR"))) {

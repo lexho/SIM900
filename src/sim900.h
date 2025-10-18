@@ -52,12 +52,6 @@ public:
     int type = 0; // Member to identify event type
 };
 
-// Declare the global listeners vector (extern means it's defined elsewhere)
-extern std::vector<std::unique_ptr<EventListener>> listeners;
-
-// Declare the global registerListener function
-void registerListener(std::unique_ptr<EventListener> listener);
-
 /**
  * 
  * @class SIM900
@@ -72,6 +66,9 @@ class SIM900 {
 private:
     /// The SoftwareSerial object used for communication with the SIM900 module.
     Stream& sim900;
+
+    /// A vector to hold all registered event listeners.
+    std::vector<std::unique_ptr<EventListener>> listeners;
     // Removed the private forward declaration of EventListener, as it's now a global class.
 
     void reset();
@@ -111,6 +108,10 @@ private:
 
     void printResponse(String response);
 
+    const char* extract(char* line, const char delim);
+    char phonenumber[14]; //+XXxxxxxxxxxx 
+    unsigned long lastRingMessageTime = 0; // Timestamp for the last "ringing" message
+
 public:
     /**
      * 
@@ -145,9 +146,14 @@ public:
      */
     bool handshake();
 
-    char phonenumber[14]; //+43xxxxxxxxxx 
-    unsigned long lastRingMessageTime = 0; // Timestamp for the last "ringing" message
-    bool calling = false;
+    bool calling;
+    const char* getPhoneNumber();
+    void setLastRingMessageTime(unsigned long time);
+    bool isCalling();
+
+    /// Register an event listener.
+    void registerListener(std::unique_ptr<EventListener> listener);
+    void clearBuffer();
 
     /**
      * 
@@ -259,7 +265,6 @@ public:
      */
     bool sendSMS2(String number, String message);
 
-    int SMSReceived();
     String readSMSFromSIM();
     
     SIM900_SMS readSMS();
