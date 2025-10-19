@@ -541,9 +541,9 @@ bool SIM900::hangUp() {
 }
 
 void SIM900::printResponse(String response) {
-    Serial.print("response: \"");
+    Serial.print(F("response: \""));
     Serial.print(response);
-    Serial.println("\"");
+    Serial.println(F("\""));
 }
 
 String SIM900::readLine() {
@@ -637,7 +637,7 @@ bool SIM900::sendSMS(const char* number, const char* message) {
     this->sim900.print(message);
     delay(500);
     this->sim900.write(0x1A);
-    Serial.println("message and ctrl-z sent, waiting for confirmation...");
+    Serial.println(F("message and ctrl-z sent, waiting for confirmation..."));
 
     // 6. Wait for +CMGS confirmation or ERROR
     // The module can take several seconds to send the SMS
@@ -650,17 +650,17 @@ bool SIM900::sendSMS(const char* number, const char* message) {
             //Serial.print(line);
             //Serial.println("\"");
             if (line.startsWith(F("+CMGS:"))) {
-                Serial.println("sms sent successfully.");
+                Serial.println(F("sms sent successfully."));
                 return true; // Success!
             }
             if (line.startsWith(F("+CMS ERROR:")) || line.startsWith(F("ERROR"))) {
-                Serial.println("sms failed to send (ERROR).");
+                Serial.println(F("error: sms failed to send."));
                 return false; // Failure
             }
         }
     }
 
-    Serial.println("timed out waiting for sms confirmation.");
+    Serial.println(F("timed out waiting for sms confirmation."));
     return false; // Timed out
 }
 
