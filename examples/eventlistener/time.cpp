@@ -20,12 +20,6 @@ void Time::storeRTC(SIM900RTC rtc)
     Time::year = rtc.year;
     Time::rtcSyncMillis = millis(); // last rtc sync in milliseconds since program start
     Time::rtcMilliSeconds = ((unsigned long)rtc.hour * 3600UL + (unsigned long)rtc.minute * 60UL + (unsigned long)rtc.second) * 1000UL;
-
-    Serial.println("storeRTC: ");
-    Serial.print("rtcSyncMillis: ");
-    Serial.println(Time::rtcSyncMillis);
-    Serial.print("Time::rtcMilliSeconds: ");
-    Serial.println(Time::rtcMilliSeconds);
 }
 
 unsigned long Time::getMillisSinceMidnight() {

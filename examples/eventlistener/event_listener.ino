@@ -4,6 +4,7 @@
 bool led_state = LOW;
 unsigned long start_time_buffer = 0;
 unsigned long rtcSyncTime = 0; // For rollover-safe daily tasks
+bool daily_task_done = false; // Flag to ensure daily invalidation runs only once
 
 const byte serialCmdBufferSize = 255;
 char serialCmdBuffer[serialCmdBufferSize];
@@ -51,17 +52,34 @@ public:
     buffer_old[0] = '\0';  // Initialize buffer_old 
   }
 
-  unsigned long long message_age = 0; // in milliseconds since midnight
+  unsigned long message_received_time = 0; // in milliseconds since midnight
+  bool has_valid_data = false;
 
   bool sendBufferedMessageViaSMS() {
-    /*Serial.println("--------------------------");
-    Serial.print("message_age: "); Serial.println(message_age);
-    //Serial.print("oneMinute: "); Serial.println(oneMinute);
-    Serial.print("message_age+oneMin: "); Serial.println((message_age + Time::oneMinute*4UL));
-    Serial.print("millisSinceMidn: "); Serial.println(Time::getMillisSinceMidnight());
-    Serial.print((message_age + Time::oneMinute*4UL)); Serial.print(" > "); Serial.print(Time::getMillisSinceMidnight());
-    Serial.println("--------------------------");*/
-    if((message_age + Time::oneMinute*4UL) > Time::getMillisSinceMidnight()) { // is dataset older than 4 minutes?
+    //Serial.print("has_valid_data: ");
+    //Serial.println(has_valid_data);
+    // If we don't have valid data, send the "not available" message.
+    if (!has_valid_data) {
+      return sim900.sendSMSRoutine("Keine aktuellen Wetterdaten verfugbar.");
+    }
+
+    unsigned long currentMillisSinceMidnight = Time::getMillisSinceMidnight();
+    unsigned long age;
+
+    // Calculate the age of the message, handling the midnight rollover case.
+    if (currentMillisSinceMidnight >= message_received_time) {
+      // Simple case: both times are on the same day.
+      age = currentMillisSinceMidnight - message_received_time;
+    } else {
+      // Rollover case: current time is on the next day.
+      // Age = (time from message to midnight) + (time from midnight to now)
+      age = (Time::oneDay - message_received_time) + currentMillisSinceMidnight;
+    }
+    //Serial.print("age: ");
+    //Serial.println(age);
+
+    // Check if the age is less than 4 minutes (240,000 milliseconds).
+    if (age < (4UL * Time::oneMinute)) {
       return sim900.sendSMSRoutine(buffer);
     } else {
       return sim900.sendSMSRoutine("Keine aktuellen Wetterdaten verfugbar.");
@@ -147,16 +165,22 @@ void loop() {
     onNocarrierPtr->printBuffer();
   }
 
-  // Update time once per day
+  // --- Daily Tasks ---
+  // This block runs approximately every hour to sync time and handle daily invalidation.
   if (millis() - rtcSyncTime >= Time::oneHour) {
-    Serial.println("sync time with sim900 rtc");
-    if(Time::getMillisSinceMidnight() > 23UL*Time::oneHour) { // every day at 23:00
-      Serial.println("invalidate message");
-      onNocarrierPtr->message_age = 0; // reset message age
-    }
     rtcSyncTime = millis();
+    Serial.println("syncing time with SIM900 RTC.");
     SIM900RTC current = sim900.rtc();
     Time::storeRTC(current);
+  }
+
+  // Invalidate the data once per day after 23:00.
+  if (Time::getMillisSinceMidnight() > 23UL * Time::oneHour && !daily_task_done) {
+    onNocarrierPtr->has_valid_data = false;
+    daily_task_done = true;
+  } else if (Time::getMillisSinceMidnight() < 23UL * Time::oneHour) {
+    // Reset the flag once we are no longer in the 23:00 hour window.
+    daily_task_done = false;
   }
 
   /*while(Serial1.available()) {
@@ -212,7 +236,8 @@ void parseCommand(const char* command) {
         unsigned long total_seconds = ((time_ptr[0] - '0') * 10UL + (time_ptr[1] - '0')) * 3600UL +
                                       ((time_ptr[3] - '0') * 10UL + (time_ptr[4] - '0')) * 60UL +
                                       ((time_ptr[6] - '0') * 10UL + (time_ptr[7] - '0'));
-        onNocarrierPtr->message_age = total_seconds * 1000UL;
+        onNocarrierPtr->message_received_time = total_seconds * 1000UL;
+        onNocarrierPtr->has_valid_data = true;
       }
       // Safely copy the message to the global buffer
       onNocarrierPtr->copyToBuffer(message);
