@@ -179,10 +179,10 @@ bool SIM900::bootstrap() {
   Serial.println(F("--------------------------"));
   Serial.println(F("Arduino SIM900 SMS WEATHER SERVICE"));
   Serial.println(F("--------------------------"));
-  Serial.println(F("[#     ] stage1: status led"));
-  Serial.println(F("[##    ] stage2: serial ready")); // stage 2
+  Serial.println(F("[#     ] status led"));
+  Serial.println(F("[##    ] serial ready")); // stage 2
 
-  Serial.println(F("[###   ] stage3: shield serial seems to be ready")); // stage 3
+  Serial.println(F("[###   ] shield serial seems to be ready")); // stage 3
   delay(1000);
   // can we write to Serial1?
   //Serial.println(F("[###   ] can we write to Serial1?"));
@@ -207,25 +207,25 @@ bool SIM900::bootstrap() {
       return false;
     }
     if(response.indexOf("OK") != -1) {
-      Serial.println(F("[####  ] stage4: shield serial is ready")); // stage 4
+      Serial.println(F("[####  ] shield serial is ready")); // stage 4
     } else {
       digitalWrite(STATUS_LED_ERROR, HIGH);
-      Serial.println(F("[###   ] error: did not receive valid response"));
-      Serial.println(F("[###   ] cannot read from shield serial. power down? check power state, check wiring"));
+      Serial.println(F("[ fail ] error: did not receive valid response"));
+      Serial.println(F("[ fail ] cannot read from shield serial. power down? check power state, check wiring"));
       // reset; if test fails poweron
       goto bootstrap_fail;
     }
   } else {
-    Serial.println(F("[###   ] error: No serial data available from SIM900."));
+    Serial.println(F("[ fail ] error: No serial data available from SIM900."));
     goto bootstrap_fail;
   }
   delay(3000);
 
   // stage 5 handshake from library
   if(this->handshake()) {
-    Serial.println(F("[##### ] stage5: handshaked!"));
+    Serial.println(F("[##### ] handshaked!"));
   } else {
-    Serial.println(F("[####  ] error: handshake failed."));
+    Serial.println(F("[ fail ] error: handshake failed."));
     goto bootstrap_fail;
   }
 
@@ -245,7 +245,7 @@ bool SIM900::bootstrap() {
   signal_strength = measureSignalStrength();
   signalOK = isSignalOk(signal_strength);
   if(simcardOK && signalOK) {
-    Serial.println(F("[######] stage6: simcard is ready and signal is OK"));
+    Serial.println(F("[######] simcard is ready and signal is OK"));
   } else {
     digitalWrite(STATUS_LED_ERROR, HIGH);
     return false;
@@ -263,7 +263,7 @@ bool SIM900::bootstrap() {
 
 bootstrap_fail:
   digitalWrite(STATUS_LED_ERROR, HIGH);
-  Serial.println(F("bootstrap failed. attempting recovery..."));
+  Serial.println(F("[ fail ] error: bootstrap failed. attempting recovery..."));
   if (!reset_attempted) {
     this->reset();
     reset_attempted = true;

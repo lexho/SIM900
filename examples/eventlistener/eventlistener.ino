@@ -56,7 +56,7 @@ public:
   bool sendBufferedMessageViaSMS() {
     // If we don't have valid data, send the "not available" message.
     if (!has_valid_data) {
-      return sim900.sendSMSRoutine("Keine aktuellen Wetterdaten verfugbar.");
+      return sim900.sendSMSRoutine("No data available.");
     }
 
     unsigned long currentMillisSinceMidnight = Time::getMillisSinceMidnight();
@@ -73,7 +73,7 @@ public:
     if (age < (4UL * Time::oneMinute)) {
       return sim900.sendSMSRoutine(buffer.c_str());
     } else {
-      return sim900.sendSMSRoutine("Keine aktuellen Wetterdaten verfugbar.");
+      return sim900.sendSMSRoutine("No data available.");
     }
   }
 
