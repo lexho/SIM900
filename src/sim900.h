@@ -80,6 +80,7 @@ private:
 
     /// Get the response from the SIM900 module.
     //String getResponse();
+    bool waitForString(Stream& stream, const char* target, unsigned int timeout);
 
     /// Get the returned operational mode from the SIM900 module.
     String getReturnedMode();
