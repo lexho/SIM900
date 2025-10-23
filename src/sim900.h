@@ -34,6 +34,8 @@
 #define PWRKEY 9
 
 #include <Arduino.h>
+#include <memory> // For std::unique_ptr
+#include <vector> // For std::vector
 
 #include "sim900_defs.h"
 
@@ -51,6 +53,10 @@ class SIM900 {
 private:
     /// The SoftwareSerial object used for communication with the SIM900 module.
     Stream& sim900;
+
+    bool sms_send_pending = false;
+    unsigned long sms_send_start_time = 0;
+    unsigned long start_time;
 
     void reset();
 
@@ -73,6 +79,7 @@ private:
 
     /// Get the response from the SIM900 module.
     //String getResponse();
+    bool waitForString(Stream& stream, const char* target, unsigned int timeout);
 
     /// Get the returned operational mode from the SIM900 module.
     String getReturnedMode();
@@ -88,6 +95,10 @@ private:
     String readLine();
 
     void printResponse(String response);
+
+    const char* extract(char* line, const char delim);
+    char phonenumber[14]; //+XXxxxxxxxxxx 
+    unsigned long lastRingMessageTime = 0; // Timestamp for the last "ringing" message
 
 public:
     /**
@@ -122,6 +133,13 @@ public:
      * 
      */
     bool handshake();
+
+    bool calling;
+    const char* getPhoneNumber();
+    void setLastRingMessageTime(unsigned long time);
+    bool isCalling();
+
+    void clearBuffer();
 
     /**
      * 
@@ -203,6 +221,8 @@ public:
 
     bool sendSMSRoutine(const char* phonenumber, const char* message);
 
+    bool sendSMSRoutine(const char* message);
+
     /**
      * 
      * @brief Send an SMS (Short Message Service) in text-mode.
@@ -231,12 +251,13 @@ public:
      */
     bool sendSMS2(String number, String message);
 
-    int SMSReceived();
     String readSMSFromSIM();
     
     SIM900_SMS readSMS();
 
     SIM900_Handler_Event handleEvents();
+
+    bool setPhoneNumber(const char* number);
 
     /**
      * 
